@@ -7,9 +7,10 @@ import time
 import threading
 import re
 from pymavlink import mavutil
+import struct
 
 # Configuration
-CONNECTION_TYPE = "DRONE"  # Options: "SITL" or "DRONE"
+CONNECTION_TYPE = "SITL"  # Options: "SITL" or "DRONE"
 SITL_CONN = "udp:127.0.0.1:14550"  # SITL connection
 DRONE_CONN = "/dev/ttyUSB0,57600"  # Real drone serial connection (adjust as needed)
 UDP_IP = "127.0.0.1"
@@ -21,13 +22,14 @@ C_BINARY = "./dwm_udp_sender"  # Path to compiled C binary
 # Global variables for latest rangefinder data
 latest_alt = None
 alt_lock = threading.Lock()
+buffer = bytearray()  # Buffer for UDP packets
 
 # Select MAVLink connection based on type
 MAVLink_CONN = SITL_CONN if CONNECTION_TYPE == "SITL" else DRONE_CONN
 
 # Create UDP socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.settimeout(0.1)  # 100ms timeout for non-blocking
+sock.settimeout(0.1)  
 
 # Bind UDP socket
 try:
@@ -121,50 +123,56 @@ except KeyboardInterrupt:
 try:
     while True:
         start_time = time.time()
-
-        # Receive UDP data (non-blocking)
-        dwm_data = None
-        try:
-            data, addr = sock.recvfrom(1024)
-            dwm_data = data.decode('utf-8').strip()
-            # print(f"Received UDP: {dwm_data}")
-        except socket.timeout:
-            print("No UDP data received")
-
-        # Parse DWM1001 data (format: ts:sec.usec [x,y,z,qf])
         dwm_x, dwm_y, dwm_z, dwm_qf, timestamp = None, None, None, None, None
-        if dwm_data:
+
+        # Receive and buffer UDP data
+        try:
+            data, addr = sock.recvfrom(29)
+            buffer.extend(data)
+        except socket.timeout:
+            print("UDP timeout, no data received")
+            data = None
+
+        # Process complete 29-byte packets
+        if len(buffer) >= 29:
+            packet = buffer[:29]
+            buffer = buffer[29:]  # Keep remaining bytes
             try:
-                # parts = dwm_data.split('[')[1].split(']')[0].split(',')
-                parts = dwm_data.strip().split(',')
-                timestamp = float(parts[0])
-                dwm_x = float(parts[1]) / 1000.0  # mm to meters
-                dwm_y = float(parts[2]) / 1000.0  # mm to meters
-                dwm_z = float(parts[3]) / 1000.0  # mm to meters
-                dwm_qf = int(parts[4])
+                tv_sec, tv_usec, x, y, z, qf = struct.unpack(">qqiiiB", packet)
+                if abs(x) > 1e6 or abs(y) > 1e6 or abs(z) > 1e6:  # Sanity check
+                    print("Invalid position data, skipping")
+                else:
+                    timestamp = tv_sec + (tv_usec / 1_000_000.0)
+                    dwm_x = x / 1000.0  # mm to meters
+                    dwm_y = y / 1000.0
+                    dwm_z = z / 1000.0
+                    dwm_qf = qf
             except Exception as e:
-                print(f"Error parsing UDP data: {e}")
+                print(f"Error unpacking UDP data: {e}")
+        else:
+            print(f"Partial packet received of len {len(buffer)}, buffering")
 
         # Get latest altitude
         with alt_lock:
             alt = latest_alt
 
-        # Write to CSV
-        try:
-            with open(filename, 'a', newline='') as csvfile:
-                writer = csv.writer(csvfile)
-                writer.writerow([
-                    f"{timestamp:.2f}" if timestamp else "",
-                    f"{dwm_x:.3f}" if dwm_x else "",
-                    f"{dwm_y:.3f}" if dwm_y else "",
-                    f"{dwm_z:.3f}" if dwm_z else "",
-                    f"{dwm_qf}" if dwm_qf else "",
-                    f"{alt:.3f}" if alt else ""
-                ])
-        except Exception as e:
-            print(f"Error writing to CSV: {e}")
+        # Write to CSV if valid data
+        if dwm_x is not None and timestamp is not None:
+            try:
+                with open(filename, 'a', newline='') as csvfile:
+                    writer = csv.writer(csvfile)
+                    writer.writerow([
+                        f"{timestamp:.2f}",
+                        f"{dwm_x:.3f}",
+                        f"{dwm_y:.3f}",
+                        f"{dwm_z:.3f}",
+                        f"{dwm_qf}",
+                        f"{alt:.3f}" if alt else ""
+                    ])
+            except Exception as e:
+                print(f"Error writing to CSV: {e}")
 
-        # Maintain strict 10Hz
+        # Maintain 10Hz
         elapsed = time.time() - start_time
         sleep_time = max(0, TIME_PERIOD - elapsed)
         time.sleep(sleep_time)
