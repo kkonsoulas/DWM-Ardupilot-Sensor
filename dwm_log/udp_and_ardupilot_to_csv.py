@@ -65,6 +65,16 @@ except Exception as e:
     sock.close()
     exit(1)
 
+# master.mav.command_long_send(
+#     master.target_system,
+#     master.target_component,
+#     mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
+#     0,
+#     mavutil.mavlink.MAVLINK_MSG_ID_DISTANCE_SENSOR,
+#     int(1e6 / 20),  # 20 Hz = 50,000 us
+#     0, 0, 0, 0, 0
+# )
+
 # Request rangefinder data at 10Hz
 master.mav.command_long_send(
     master.target_system, master.target_component,
@@ -75,15 +85,22 @@ master.mav.command_long_send(
 # Function to collect rangefinder data
 def collect_rangefinder():
     global latest_alt
+    i=0
     while True:
+        start_time = time.time()
         msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.1)
         if msg:
+            i=0
             with alt_lock:
                 latest_alt = msg.current_distance / 100.0  # cm to meters
                 # print(f"Updated altitude: {latest_alt:.2f} m")
-        # else:
-            # print("No altitude message")
-        time.sleep(0.01)  # Prevent tight loop
+        else:
+            i = i +1
+            print(f"No altitude message {i}")
+        # Maintain 10Hz
+        elapsed = time.time() - start_time
+        sleep_time = max(0, TIME_PERIOD - elapsed)
+        time.sleep(sleep_time)
 
 # Start rangefinder collection thread
 rangefinder_thread = threading.Thread(target=collect_rangefinder, daemon=True)
@@ -124,7 +141,6 @@ try:
     while True:
         start_time = time.time()
         dwm_x, dwm_y, dwm_z, dwm_qf, timestamp = None, None, None, None, None
-
         # Receive and buffer UDP data
         try:
             data, addr = sock.recvfrom(29)
@@ -132,7 +148,6 @@ try:
         except socket.timeout:
             print("UDP timeout, no data received")
             data = None
-
         # Process complete 29-byte packets
         if len(buffer) >= 29:
             packet = buffer[:29]
