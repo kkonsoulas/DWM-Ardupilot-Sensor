@@ -8,9 +8,10 @@ import threading
 import re
 from pymavlink import mavutil
 import struct
+from apscheduler.schedulers.background import BackgroundScheduler
 
 # Configuration
-CONNECTION_TYPE = "SITL"  # Options: "SITL" or "DRONE"
+CONNECTION_TYPE = "DRONE"  # Options: "SITL" or "DRONE"
 SITL_CONN = "udp:127.0.0.1:14550"  # SITL connection
 DRONE_CONN = "/dev/ttyUSB0,57600"  # Real drone serial connection (adjust as needed)
 UDP_IP = "127.0.0.1"
@@ -29,7 +30,7 @@ MAVLink_CONN = SITL_CONN if CONNECTION_TYPE == "SITL" else DRONE_CONN
 
 # Create UDP socket
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-sock.settimeout(0.1)  
+sock.settimeout(0.12)  
 
 # Bind UDP socket
 try:
@@ -65,15 +66,6 @@ except Exception as e:
     sock.close()
     exit(1)
 
-# master.mav.command_long_send(
-#     master.target_system,
-#     master.target_component,
-#     mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-#     0,
-#     mavutil.mavlink.MAVLINK_MSG_ID_DISTANCE_SENSOR,
-#     int(1e6 / 20),  # 20 Hz = 50,000 us
-#     0, 0, 0, 0, 0
-# )
 
 # Request rangefinder data at 10Hz
 master.mav.command_long_send(
@@ -82,13 +74,27 @@ master.mav.command_long_send(
     0, mavutil.mavlink.MAVLINK_MSG_ID_DISTANCE_SENSOR, 100000, 0, 0, 0, 0, 0
 )
 
+# # Function to collect rangefinder data
+# def collect_rangefinder():
+#     global latest_alt
+#     i=0
+#     msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.1)
+#     if msg:
+#         i=0
+#         with alt_lock:
+#             latest_alt = msg.current_distance / 100.0  # cm to meters
+#             # print(f"Updated altitude: {latest_alt:.2f} m")
+#     else:
+#         i = i +1
+#         print(f"No altitude message {i}")
+#     return
+
 # Function to collect rangefinder data
 def collect_rangefinder():
     global latest_alt
     i=0
     while True:
-        start_time = time.time()
-        msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.1)
+        msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.11)
         if msg:
             i=0
             with alt_lock:
@@ -97,12 +103,12 @@ def collect_rangefinder():
         else:
             i = i +1
             print(f"No altitude message {i}")
-        # Maintain 10Hz
-        elapsed = time.time() - start_time
-        sleep_time = max(0, TIME_PERIOD - elapsed)
-        time.sleep(sleep_time)
+    return
 
 # Start rangefinder collection thread
+# scheduler = BackgroundScheduler()
+# scheduler.add_job(collect_rangefinder, 'interval', seconds=0.1,max_instances=2)
+# scheduler.start()
 rangefinder_thread = threading.Thread(target=collect_rangefinder, daemon=True)
 rangefinder_thread.start()
 
@@ -139,7 +145,7 @@ except KeyboardInterrupt:
 
 try:
     while True:
-        start_time = time.time()
+        
         dwm_x, dwm_y, dwm_z, dwm_qf, timestamp = None, None, None, None, None
         # Receive and buffer UDP data
         try:
@@ -177,7 +183,7 @@ try:
                 with open(filename, 'a', newline='') as csvfile:
                     writer = csv.writer(csvfile)
                     writer.writerow([
-                        f"{timestamp:.2f}",
+                        f"{timestamp:.4f}",
                         f"{dwm_x:.3f}",
                         f"{dwm_y:.3f}",
                         f"{dwm_z:.3f}",
@@ -187,10 +193,6 @@ try:
             except Exception as e:
                 print(f"Error writing to CSV: {e}")
 
-        # Maintain 10Hz
-        elapsed = time.time() - start_time
-        sleep_time = max(0, TIME_PERIOD - elapsed)
-        time.sleep(sleep_time)
 
 except KeyboardInterrupt:
     print("Terminating...")

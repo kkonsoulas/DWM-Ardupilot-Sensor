@@ -7,13 +7,18 @@
 #include <arpa/inet.h>
 #include <sys/time.h>
 #include <signal.h>
+#include <semaphore.h>
+#include <pthread.h>
 #include "dwm_api.h"
 #include "hal.h"
 #include "hal_log.h"
 #include "../test_util/test_util.h"
 
+// #define DEBUG_PRINT
+// #define DEBUG_RANDOM_LOC
 #define UDP_IP "127.0.0.1" // Python script IP
 #define UDP_PORT 5005      // Python script port
+#define INTERVAL_MS 100
 
 struct timeval tv;
 uint64_t ts_curr = 0;
@@ -21,6 +26,7 @@ uint64_t ts_last = 0;
 volatile uint8_t data_ready;
 static volatile sig_atomic_t keep_running = 1;
 int udp_fd = -1; // UDP socket file descriptor
+sem_t semaphore;
 
 void signal_handler(int sig)
 {
@@ -29,6 +35,7 @@ void signal_handler(int sig)
         close(udp_fd);
         udp_fd = -1;
     }
+    exit(0);
     keep_running = 0;
 }
 
@@ -75,57 +82,120 @@ void send_packed_data(int udp_fd, struct sockaddr_in* server_addr,
     sendto(udp_fd, buffer, offset, 0, (struct sockaddr*)server_addr, sizeof(*server_addr));
 }
 
-int get_loc(struct sockaddr_in* server_addr)
-{
-    int rv, err_cnt = 0;
-    dwm_loc_data_t loc;
-    dwm_pos_t pos;
-    loc.p_pos = &pos;
-    rv = Test_CheckTxRx(dwm_loc_get(&loc));
-    // dwm_loc_get(&loc);
 
-    gettimeofday(&tv, NULL);
+void add_ms(struct timespec *t, int ms) {
+    t->tv_nsec += (ms % 1000) * 1000000;
+    t->tv_sec  += ms / 1000;
 
-    
-    // char buffer[128];
-    // snprintf(buffer, sizeof(buffer), "%ld.%06ld,%d,%d,%d,%u,",
-        // tv.tv_sec, tv.tv_usec, loc.p_pos->x, loc.p_pos->y, loc.p_pos->z, loc.p_pos->qf);
-        
-    // Send data over UDP
-
-    // sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
-    send_packed_data(udp_fd, server_addr,
-                 tv.tv_sec, tv.tv_usec,
-                 loc.p_pos->x, loc.p_pos->y, loc.p_pos->z,
-                 loc.p_pos->qf);
-    // printf("Sent: %s", buffer);
-    
-    err_cnt += rv;
-
-    return err_cnt;
-    // return 0;
+    if (t->tv_nsec >= 1000000000) {
+        t->tv_nsec -= 1000000000;
+        t->tv_sec += 1;
+    }
 }
+
+void print_usec_now(){
+    gettimeofday(&tv, NULL);
+    printf("Time: %06ld\n",tv.tv_usec);
+}
+
+// // void* get_loc(void *arg)
+// void get_loc(struct sockaddr_in *server_addr)
+// {
+//     // struct sockaddr_in *server_addr = (struct sockaddr_in *)arg;
+//     #ifndef DEBUG
+//     int rv, err_cnt = 0;
+//     dwm_loc_data_t loc;
+//     dwm_pos_t pos;
+//     loc.p_pos = &pos;
+//     rv = Test_CheckTxRx(dwm_loc_get(&loc));
+//     // dwm_loc_get(&loc);
+//     #endif
+
+//     #ifdef DEBUG
+
+//     // while(1){
+//         // sem_wait(&semaphore);
+//         gettimeofday(&tv, NULL);
+//         printf("Time: %06ld\n",tv.tv_usec);
+//         // fflush(stdin);
+//     // }
+//     // usleep(1000);
+//     #endif
+//     // char buffer[128];
+//     // snprintf(buffer, sizeof(buffer), "%ld.%06ld,%d,%d,%d,%u,",
+//         // tv.tv_sec, tv.tv_usec, loc.p_pos->x, loc.p_pos->y, loc.p_pos->z, loc.p_pos->qf);
+        
+//     // Send data over UDP
+//     #ifndef DEBUG 
+//     // sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
+//     send_packed_data(udp_fd, server_addr,
+//                  tv.tv_sec, tv.tv_usec,
+//                  loc.p_pos->x, loc.p_pos->y, loc.p_pos->z,
+//                  loc.p_pos->qf);
+//     // printf("Sent: %s", buffer);
+//     err_cnt += rv;
+//     #endif
+
+//     return;
+//     // return 0;
+// }
 
 void spi_les_test(void)
 {
+    //init dwm
     dwm_init();
     dwm_int_cfg_set(DWM1001_INTR_LOC_READY);
+    
+    //init socket
     struct sockaddr_in server_addr;
     memset(&server_addr, 0, sizeof(server_addr));
     server_addr.sin_family = AF_INET;
     server_addr.sin_port = htons(UDP_PORT);
     inet_pton(AF_INET, UDP_IP, &server_addr.sin_addr);
 
-    while (keep_running) {
-        struct timeval start, end;
-        gettimeofday(&start, NULL);
-        get_loc(&server_addr);
-        gettimeofday(&end, NULL);
-        long elapsed = (end.tv_sec - start.tv_sec) * 1000 +
-                       (end.tv_usec - start.tv_usec) / 1000;
-        long remaining = 100 - elapsed;
-        if (remaining > 0)
-            HAL_Delay(remaining);
+    dwm_status_t status;
+    dwm_loc_data_t loc;
+    dwm_pos_t pos;
+    loc.p_pos = &pos;
+    struct timespec next;
+    char loc_ready;
+
+    //send loc data at 10Hz
+    clock_gettime(CLOCK_MONOTONIC, &next);  // Get current time
+    while (1) {
+        #ifndef DEBUG_PRINT 
+        #ifndef DEBUG_RANDOM_LOC
+        loc_ready = dwm_status_get(&status) == RV_OK && status.loc_data;
+        if(!loc_ready){ //if we are so unlucky that we sample around the update time point just wait a couple 1ms further to skip it
+            do{
+                usleep(1000);
+                clock_gettime(CLOCK_MONOTONIC, &next);  // Get current time
+            }while(dwm_status_get(&status) == RV_OK && status.loc_data);
+        }
+        
+        Test_CheckTxRx(dwm_loc_get(&loc));
+        gettimeofday(&tv, NULL);
+        send_packed_data(udp_fd, &server_addr,
+            tv.tv_sec, tv.tv_usec,
+            loc.p_pos->x, loc.p_pos->y, loc.p_pos->z,
+            loc.p_pos->qf);
+        #else
+        gettimeofday(&tv, NULL);
+        send_packed_data(udp_fd, &server_addr,
+            tv.tv_sec, tv.tv_usec,
+            rand()%1000, rand()%1000, rand()%1000,
+            rand()%100);
+        #endif
+        #endif
+        // get_loc(&server_addr);
+  
+        #ifdef DEBUG_PRINT
+        print_usec_now();
+        #endif
+
+        add_ms(&next, INTERVAL_MS);
+        // Sleep until the exact next time
+        clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next, NULL);
     }
 }
 
@@ -148,10 +218,10 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    int k = 1;
-    while (k-- > 0 && keep_running) {
-        spi_les_test();
-    }
+    // int k = 1;
+    // while (k-- > 0 && keep_running) {
+    spi_les_test();
+    // }
 
     if (udp_fd != -1) {
         close(udp_fd);
