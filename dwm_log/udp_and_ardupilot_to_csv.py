@@ -8,12 +8,12 @@ import threading
 import re
 from pymavlink import mavutil
 import struct
-from apscheduler.schedulers.background import BackgroundScheduler
+# from apscheduler.schedulers.background import BackgroundScheduler
 
 # Configuration
 CONNECTION_TYPE = "DRONE"  # Options: "SITL" or "DRONE"
 SITL_CONN = "udp:127.0.0.1:14550"  # SITL connection
-DRONE_CONN = "/dev/ttyUSB0,57600"  # Real drone serial connection (adjust as needed)
+DRONE_CONN = "udp:192.168.223.224:14550"  # Real drone socket connection (adjust as needed)
 UDP_IP = "127.0.0.1"
 UDP_PORT = 5005
 UPDATE_RATE_HZ = 10  # 10Hz for data collection
