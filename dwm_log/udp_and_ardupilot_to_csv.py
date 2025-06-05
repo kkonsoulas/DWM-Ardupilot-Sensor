@@ -8,14 +8,13 @@ import threading
 import re
 from pymavlink import mavutil
 import struct
-# from apscheduler.schedulers.background import BackgroundScheduler
 
 # Configuration
 CONNECTION_TYPE = "DRONE"  # Options: "SITL" or "DRONE"
-SITL_CONN = "udp:127.0.0.1:14550"  # SITL connection
-DRONE_CONN = "udp:192.168.223.224:14550"  # Real drone socket connection (adjust as needed)
-UDP_IP = "127.0.0.1"
-UDP_PORT = 5005
+SITL_CONN = "udp:127.0.0.1:14550"  # Local SITL connection
+DRONE_CONN = "udp:0.0.0.0:14552"  # Real drone socket connection (adjust as needed)
+UDP_IP = "127.0.0.1" # localhost
+UDP_PORT = 5005 
 UPDATE_RATE_HZ = 10  # 10Hz for data collection
 TIME_PERIOD = 1.0 / UPDATE_RATE_HZ
 C_BINARY = "./dwm_udp_sender"  # Path to compiled C binary
@@ -74,41 +73,22 @@ master.mav.command_long_send(
     0, mavutil.mavlink.MAVLINK_MSG_ID_DISTANCE_SENSOR, 100000, 0, 0, 0, 0, 0
 )
 
-# # Function to collect rangefinder data
-# def collect_rangefinder():
-#     global latest_alt
-#     i=0
-#     msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.1)
-#     if msg:
-#         i=0
-#         with alt_lock:
-#             latest_alt = msg.current_distance / 100.0  # cm to meters
-#             # print(f"Updated altitude: {latest_alt:.2f} m")
-#     else:
-#         i = i +1
-#         print(f"No altitude message {i}")
-#     return
-
 # Function to collect rangefinder data
 def collect_rangefinder():
     global latest_alt
     i=0
     while True:
-        msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.11)
+        msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.12) #
         if msg:
             i=0
             with alt_lock:
                 latest_alt = msg.current_distance / 100.0  # cm to meters
-                # print(f"Updated altitude: {latest_alt:.2f} m")
         else:
             i = i +1
             print(f"No altitude message {i}")
     return
 
 # Start rangefinder collection thread
-# scheduler = BackgroundScheduler()
-# scheduler.add_job(collect_rangefinder, 'interval', seconds=0.1,max_instances=2)
-# scheduler.start()
 rangefinder_thread = threading.Thread(target=collect_rangefinder, daemon=True)
 rangefinder_thread.start()
 

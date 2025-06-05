@@ -18,15 +18,10 @@
 // #define DEBUG_RANDOM_LOC
 #define UDP_IP "127.0.0.1" // Python script IP
 #define UDP_PORT 5005      // Python script port
-#define INTERVAL_MS 100
+#define INTERVAL_MS 100    // period of location sampling 
 
-struct timeval tv;
-uint64_t ts_curr = 0;
-uint64_t ts_last = 0;
-volatile uint8_t data_ready;
-static volatile sig_atomic_t keep_running = 1;
+
 int udp_fd = -1; // UDP socket file descriptor
-sem_t semaphore;
 
 void signal_handler(int sig)
 {
@@ -36,7 +31,6 @@ void signal_handler(int sig)
         udp_fd = -1;
     }
     exit(0);
-    keep_running = 0;
 }
 
 // Helper to write 64-bit integer in big endian (network byte order)
@@ -93,54 +87,13 @@ void add_ms(struct timespec *t, int ms) {
     }
 }
 
-void print_usec_now(){
-    gettimeofday(&tv, NULL);
-    printf("Time: %06ld\n",tv.tv_usec);
+void print_usec_now(struct timeval *tv){
+    gettimeofday(tv, NULL);
+    printf("Time: %06ld\n",tv->tv_usec);
 }
 
-// // void* get_loc(void *arg)
-// void get_loc(struct sockaddr_in *server_addr)
-// {
-//     // struct sockaddr_in *server_addr = (struct sockaddr_in *)arg;
-//     #ifndef DEBUG
-//     int rv, err_cnt = 0;
-//     dwm_loc_data_t loc;
-//     dwm_pos_t pos;
-//     loc.p_pos = &pos;
-//     rv = Test_CheckTxRx(dwm_loc_get(&loc));
-//     // dwm_loc_get(&loc);
-//     #endif
-
-//     #ifdef DEBUG
-
-//     // while(1){
-//         // sem_wait(&semaphore);
-//         gettimeofday(&tv, NULL);
-//         printf("Time: %06ld\n",tv.tv_usec);
-//         // fflush(stdin);
-//     // }
-//     // usleep(1000);
-//     #endif
-//     // char buffer[128];
-//     // snprintf(buffer, sizeof(buffer), "%ld.%06ld,%d,%d,%d,%u,",
-//         // tv.tv_sec, tv.tv_usec, loc.p_pos->x, loc.p_pos->y, loc.p_pos->z, loc.p_pos->qf);
-        
-//     // Send data over UDP
-//     #ifndef DEBUG 
-//     // sendto(udp_fd, buffer, strlen(buffer), 0, (struct sockaddr*)&server_addr, sizeof(server_addr));
-//     send_packed_data(udp_fd, server_addr,
-//                  tv.tv_sec, tv.tv_usec,
-//                  loc.p_pos->x, loc.p_pos->y, loc.p_pos->z,
-//                  loc.p_pos->qf);
-//     // printf("Sent: %s", buffer);
-//     err_cnt += rv;
-//     #endif
-
-//     return;
-//     // return 0;
-// }
-
-void spi_les_test(void)
+//send real time location
+void send_rtl(void)
 {
     //init dwm
     dwm_init();
@@ -153,6 +106,7 @@ void spi_les_test(void)
     server_addr.sin_port = htons(UDP_PORT);
     inet_pton(AF_INET, UDP_IP, &server_addr.sin_addr);
 
+    struct timeval tv;
     dwm_status_t status;
     dwm_loc_data_t loc;
     dwm_pos_t pos;
@@ -165,15 +119,19 @@ void spi_les_test(void)
     while (1) {
         #ifndef DEBUG_PRINT 
         #ifndef DEBUG_RANDOM_LOC
-        loc_ready = dwm_status_get(&status) == RV_OK && status.loc_data;
-        if(!loc_ready){ //if we are so unlucky that we sample around the update time point just wait a couple 1ms further to skip it
-            do{
-                usleep(1000);
-                clock_gettime(CLOCK_MONOTONIC, &next);  // Get current time
-            }while(dwm_status_get(&status) == RV_OK && status.loc_data);
+        while(1){
+            loc_ready = dwm_status_get(&status) == RV_OK && status.loc_data;
+            if(loc_ready){
+                break;
+            }
+            //if we are so unlucky that we sample around the update time point just wait 1ms to skip it
+            usleep(1000); 
+            clock_gettime(CLOCK_MONOTONIC, &next);  // Set new sampling point by getting the current time
         }
+
         
-        Test_CheckTxRx(dwm_loc_get(&loc));
+        dwm_loc_get(&loc);
+        // Test_CheckTxRx(dwm_loc_get(&loc));
         gettimeofday(&tv, NULL);
         send_packed_data(udp_fd, &server_addr,
             tv.tv_sec, tv.tv_usec,
@@ -190,7 +148,7 @@ void spi_les_test(void)
         // get_loc(&server_addr);
   
         #ifdef DEBUG_PRINT
-        print_usec_now();
+        print_usec_now(&tv);
         #endif
 
         add_ms(&next, INTERVAL_MS);
@@ -218,10 +176,7 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-    // int k = 1;
-    // while (k-- > 0 && keep_running) {
-    spi_les_test();
-    // }
+    send_rtl();
 
     if (udp_fd != -1) {
         close(udp_fd);
