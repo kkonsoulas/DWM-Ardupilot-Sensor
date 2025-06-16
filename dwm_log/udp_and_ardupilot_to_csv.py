@@ -66,27 +66,29 @@ except Exception as e:
     exit(1)
 
 
-# Request rangefinder data at 10Hz
+
+# Request GLOBAL_POSITION_INT data at 10Hz
 master.mav.command_long_send(
     master.target_system, master.target_component,
     mavutil.mavlink.MAV_CMD_SET_MESSAGE_INTERVAL,
-    0, mavutil.mavlink.MAVLINK_MSG_ID_DISTANCE_SENSOR, 100000, 0, 0, 0, 0, 0
+    0, mavutil.mavlink.MAVLINK_MSG_ID_GLOBAL_POSITION_INT, 100000, 0, 0, 0, 0, 0
 )
 
-# Function to collect rangefinder data
+# Function to collect altitude data from GLOBAL_POSITION_INT
 def collect_rangefinder():
     global latest_alt
-    i=0
+    i = 0
     while True:
-        msg = master.recv_match(type='DISTANCE_SENSOR', blocking=True, timeout=0.12) #
+        msg = master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=0.12)
         if msg:
-            i=0
+            i = 0
             with alt_lock:
-                latest_alt = msg.current_distance / 100.0  # cm to meters
+                latest_alt = msg.relative_alt / 1000.0  # mm to meters 
         else:
-            i = i +1
+            i += 1
             print(f"No altitude message {i}")
     return
+
 
 # Start rangefinder collection thread
 rangefinder_thread = threading.Thread(target=collect_rangefinder, daemon=True)
